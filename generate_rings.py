@@ -76,28 +76,28 @@ def post_process_rings(rings: np.ndarray) -> np.ndarray:
     return rings
 
 
-def main():
+def main(visualize=False):
     lamps = [
         LampParams(
-            sphere_diameter=450,
-            layer_thickness=8,
+            sphere_diameter=260,
+            layer_thickness=7,
             ring_width=15,
-            sphere_opening_top=150,
-            sphere_opening_bottom=250
+            sphere_opening_top=95,
+            sphere_opening_bottom=115
+        ),
+        LampParams(
+            sphere_diameter=360,
+            layer_thickness=7,
+            ring_width=15,
+            sphere_opening_top=115,
+            sphere_opening_bottom=170
         ),
         LampParams(
             sphere_diameter=450,
-            layer_thickness=8,
+            layer_thickness=7,
             ring_width=15,
             sphere_opening_top=150,
-            sphere_opening_bottom=250
-        ),
-        LampParams(
-            sphere_diameter=450,
-            layer_thickness=8,
-            ring_width=15,
-            sphere_opening_top=150,
-            sphere_opening_bottom=250
+            sphere_opening_bottom=235
         )
     ]
 
@@ -108,14 +108,21 @@ def main():
     print(rings_sorted_ro)
     print(f"#rings: {len(rings)}")
 
-    # fig, ax = plt.subplots(1, 1)
-    # plt.suptitle("cardboard lamp")
-    # ax.axis('equal')
-    # for z, r_i, r_o in rings:
-    #     data_linewidth_plot([r_i, r_o], [z, z], ax=ax, linewidth=layer_thickness, color='brown')
-    #     data_linewidth_plot([-r_i, -r_o], [z, z], ax=ax, linewidth=layer_thickness, color='brown')
-    # plt.show()
+    if visualize:
+        zmin = rings[:, 0].min()
+        zmax = rings[:, 0].max()
+        xmax = rings[:, 2].max()
+        xmin = -xmax
+        fig, ax = plt.subplots(1, 3)
+        plt.suptitle("cardboard lamps")
+        for lamp_idx in range(len(lamps)):
+            ax[lamp_idx].axis('equal')
+            arr = rings[rings[:, 3] == lamp_idx][:, :3]
+            for z, r_i, r_o in arr:
+                data_linewidth_plot([r_i, r_o], [z, z], ax=ax[lamp_idx], linewidth=lamps[lamp_idx].layer_thickness, color='brown')
+                data_linewidth_plot([-r_i, -r_o], [z, z], ax=ax[lamp_idx], linewidth=lamps[lamp_idx].layer_thickness, color='brown')
+        plt.show()
 
 
 if __name__ == "__main__":
-    main()
+    main(visualize=True)
