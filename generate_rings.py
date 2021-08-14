@@ -1,7 +1,12 @@
+import os
+import time
 from typing import List, Optional, Tuple
 
+import ezdxf
 import matplotlib.pyplot as plt
 import numpy as np
+from ezdxf import units
+from ezdxf.layouts import Modelspace
 
 from utils import data_linewidth_plot
 
@@ -83,6 +88,14 @@ class CutArea:
         for diam in self.cut_diams:
             circle = plt.Circle(center, diam / 2, color='black', fill=False)
             ax.add_patch(circle)
+
+    def add_to_dxf(self, msp: Modelspace, x0=None, layer: str = 'background'):
+        if x0 is None:
+            x0 = np.zeros([2])
+        center = np.asarray([self.diameter / 2] * 2) + x0
+
+        for diam in self.cut_diams:
+            msp.add_circle(center, diam / 2)
 
 
 def compute_rings(lamps: List[LampParams]) -> np.ndarray:
@@ -247,7 +260,20 @@ class Job:
         ax.set_ylim((0, size[1]))
 
         for cut_area, corner in zip(self._cut_areas, self._top_left_corners):
-            cut_area.plot(ax, x0 + corner)
+            cut_area.plot(ax=ax, x0=x0 + corner)
+
+    def save_dxf(self, filename: str):
+        doc = ezdxf.new()
+        # Set centimeter as document/modelspace units
+        doc.units = units.MM
+        # which is a shortcut (including validation) for
+        doc.header['$INSUNITS'] = units.MM
+        msp = doc.modelspace()
+
+        for cut_area, corner in zip(self._cut_areas, self._top_left_corners):
+            cut_area.add_to_dxf(msp=msp)
+
+        doc.saveas(filename)
 
 
 def get_jobs(cut_areas: List[CutArea], work_area: Optional[np.ndarray] = None) -> List[Job]:
@@ -264,7 +290,7 @@ def get_jobs(cut_areas: List[CutArea], work_area: Optional[np.ndarray] = None) -
     return jobs
 
 
-def generate_drawing(cut_areas: List[CutArea], work_area=None):
+def generate_drawing(cut_areas: List[CutArea], work_area=None, out_dir: str = None):
     if work_area is None:
         work_area = np.asarray([np.infty] * 2)
 
@@ -274,14 +300,17 @@ def generate_drawing(cut_areas: List[CutArea], work_area=None):
     fig.suptitle("technical drawing")
     if not isinstance(axs, np.ndarray):
         axs = np.asarray([axs])
-    for job, ax in zip(jobs, axs):
+    for idx, (job, ax) in enumerate(zip(jobs, axs)):
         job.plot(ax)
+        if out_dir is not None:
+            os.makedirs(out_dir, exist_ok=True)
+            job.save_dxf(os.path.join(out_dir, f"job_{idx + 1}.dxf"))
 
 
 def main(visualize=False):
     lamps = [
         LampParams(
-            sphere_diameter=260,
+            sphere_diameter=270,
             layer_thickness=7,
             ring_width=15,
             sphere_opening_top=95,
@@ -303,8 +332,8 @@ def main(visualize=False):
         )
     ]
     tolerance = 4
-    padding = 10
-    work_area = np.asarray([940, 565])
+    padding = 5
+    work_area = np.asarray([4000, 2000])
 
     rings = compute_rings(lamps)
     cut_areas = get_cut_areas(rings, tolerance=tolerance, padding=padding)
@@ -339,7 +368,8 @@ def main(visualize=False):
                         color='brown'
                     )
 
-        generate_drawing(cut_areas, work_area)
+        timestr = time.strftime("%Y%m%d-%H%M%S")
+        generate_drawing(cut_areas, work_area, out_dir=os.path.join("output", timestr))
 
         plt.show()
 
