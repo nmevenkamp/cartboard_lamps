@@ -1,4 +1,4 @@
-from typing import List, Tuple
+from typing import List, Optional, Tuple
 
 import matplotlib.pyplot as plt
 import numpy as np
@@ -23,43 +23,66 @@ class LampParams:
 
 
 class CutArea:
-    def __init__(self):
+    def __init__(self, tolerance: float = 0, padding: float = 0):
+        self.tolerance = tolerance
+        self.padding = padding
         self._rings: List[np.ndarray] = []
+
+    def __len__(self) -> int:
+        return len(self._rings)
 
     @property
     def rings(self) -> List[np.ndarray]:
         return self._rings
 
-    def get_cut_rings(self, tolerance: int = 0) -> List[np.ndarray]:
+    @property
+    def cut_rings(self) -> List[np.ndarray]:
         res = [self.rings[0]]
         prev_diam = self.rings[0][2]
         for ring in self.rings[1:]:
-            if ring[1] - prev_diam <= 2 * tolerance:
+            if ring[1] - prev_diam <= 2 * self.tolerance:
                 ring[1] = prev_diam
             res.append(ring)
 
         return res
 
-    def get_cut_diams(self, tolerance: int = 0) -> List[int]:
-        res = [self.rings[0][1]]
+    @property
+    def cut_diams(self) -> List[int]:
+        res = [self.rings[0][1], self.rings[0][2]]
         prev_diam = self.rings[0][2]
         for ring in self.rings[1:]:
-            if ring[1] - prev_diam > 2 * tolerance:
+            if ring[1] - prev_diam > 2 * self.tolerance:
                 res.append(ring[1])
             res.append(ring[2])
             prev_diam = ring[2]
 
         return res
 
-    def get_total_cut_length(self, tolerance: int = 0) -> float:
-        return sum([np.pi * diam for diam in self.get_cut_diams(tolerance)])
+    @property
+    def total_cut_length(self) -> float:
+        return sum([np.pi * diam for diam in self.cut_diams])
 
     @property
     def diameter(self) -> int:
-        return max([ring[2] for ring in self.rings])  # TODO
+        return max([ring[2] for ring in self.rings])
+
+    @property
+    def job_diameter(self) -> int:
+        return max([ring[2] for ring in self.rings]) + 2 * self.padding
 
     def add_ring(self, ring: np.ndarray):
         self._rings.append(ring)
+
+    def plot(self, ax=None, x0=None):
+        if x0 is None:
+            x0 = np.zeros([2])
+        center = np.asarray([self.diameter / 2] * 2) + x0
+        if ax is None:
+            fig, ax = plt.subplots()
+
+        for diam in self.cut_diams:
+            circle = plt.Circle(center, diam / 2, color='black', fill=False)
+            ax.add_patch(circle)
 
 
 def compute_rings(lamps: List[LampParams]) -> np.ndarray:
@@ -114,23 +137,23 @@ def compute_rings(lamps: List[LampParams]) -> np.ndarray:
     return res
 
 
-def get_cut_areas(rings: np.ndarray) -> List[CutArea]:
+def get_cut_areas(rings: np.ndarray, **kwargs) -> List[CutArea]:
     rings = rings.copy()
 
     res = []
 
     while len(rings):
-        rings, cut_area = get_cut_area(rings)
+        rings, cut_area = get_cut_area(rings, **kwargs)
         res.append(cut_area)
 
     return res
 
 
-def get_cut_area(rings: np.ndarray) -> Tuple[np.ndarray, CutArea]:
+def get_cut_area(rings: np.ndarray, **kwargs) -> Tuple[np.ndarray, CutArea]:
     # start with smallest inner radius and corresponding outer radius for the first ring
     idx = np.argmin(rings[:, 1])
 
-    cut_area = CutArea()
+    cut_area = CutArea(**kwargs)
     cut_area.add_ring(rings[idx])
     rings = np.delete(rings, idx, axis=0)
 
@@ -146,6 +169,113 @@ def get_cut_area(rings: np.ndarray) -> Tuple[np.ndarray, CutArea]:
         idx = np.where(np.logical_and(rings[:, 1] == d_i, rings[:, 2] == d_o))[0][0]
         cut_area.add_ring(rings[idx])
         rings = np.delete(rings, idx, axis=0)
+
+
+class Job:
+    def __init__(self, work_area: Optional[np.ndarray] = None):
+        if work_area is None:
+            work_area = np.asarray([np.infty] * 2)
+
+        self.work_area = np.asarray([work_area[:].max(), work_area[:].min()])
+        self._cut_areas = []
+        self._top_left_corners = []
+
+    def __iter__(self):
+        return self._cut_areas.__iter__()
+
+    @property
+    def size(self) -> np.ndarray:
+        return self._top_left_corners[-1] + self._cut_areas[-1].diameter
+
+    def assign_cut_areas(self, cut_areas: List[CutArea]) -> List[CutArea]:
+        if max([cut_area.diameter for cut_area in cut_areas]) > self.work_area[:].min():
+            raise ValueError("Work area is too small!")
+
+        cas = cut_areas[:]
+
+        x0, y0 = 0, 0
+        row_max_diam = 0
+        while True:
+            # first, check if we can still fit any cut area into this row or the next row
+            candidates = [
+                ca for ca in cas
+                if (
+                        (x0 + ca.job_diameter < self.work_area[0] and y0 + ca.job_diameter < self.work_area[1]) or
+                        (y0 + row_max_diam + ca.job_diameter < self.work_area[1])
+                )
+            ]
+            if not candidates:
+                break
+
+            # now, check if we can still fit a cut area in this row
+            candidates = [
+                ca for ca in cas
+                if x0 + ca.job_diameter < self.work_area[0] and y0 + ca.job_diameter < self.work_area[1]
+            ]
+            if not candidates:
+                # go to the next row
+                y0 += row_max_diam
+                x0 = 0
+                row_max_diam = 0
+                continue
+
+            # of all candidates, first select those with maximum diameter
+            max_diam = max([ca.job_diameter for ca in candidates])
+            candidates = [ca for ca in candidates if ca.job_diameter == max_diam]
+
+            # now, select the cut area with the maximum number of cuts
+            ca = max(candidates, key=lambda ca: len(ca))
+            cas.remove(ca)
+            self._cut_areas.append(ca)
+            self._top_left_corners.append(np.asarray([x0, y0]))
+            row_max_diam = max(row_max_diam, ca.job_diameter)
+            x0 += ca.job_diameter
+
+        return cas
+
+    def plot(self, ax):
+        ax.axis('equal')
+
+        if self.work_area[0] == np.infty:
+            x0 = np.zeros(2)
+            size = self.size
+        else:
+            x0 = (self.work_area - self.size) / 2
+            size = self.work_area
+
+        ax.set_xlim((0, size[0]))
+        ax.set_ylim((0, size[1]))
+
+        for cut_area, corner in zip(self._cut_areas, self._top_left_corners):
+            cut_area.plot(ax, x0 + corner)
+
+
+def get_jobs(cut_areas: List[CutArea], work_area: Optional[np.ndarray] = None) -> List[Job]:
+    if max([cut_area.diameter for cut_area in cut_areas]) > work_area[:].min():
+        raise ValueError("Work area is too small!")
+
+    cas = cut_areas[:]
+    jobs = []
+    while cas:
+        job = Job(work_area)
+        cas = job.assign_cut_areas(cas)
+        jobs.append(job)
+
+    return jobs
+
+
+def generate_drawing(cut_areas: List[CutArea], work_area=None):
+    if work_area is None:
+        work_area = np.asarray([np.infty] * 2)
+
+    jobs = get_jobs(cut_areas, work_area)
+
+    fig, axs = plt.subplots(len(jobs))
+    fig.suptitle("technical drawing")
+    if not isinstance(axs, np.ndarray):
+        axs = np.asarray([axs])
+    for job, ax in zip(jobs, axs):
+        job.plot(ax)
 
 
 def main(visualize=False):
@@ -173,20 +303,21 @@ def main(visualize=False):
         )
     ]
     tolerance = 4
-    work_area = [940, 565]
+    padding = 10
+    work_area = np.asarray([940, 565])
 
     rings = compute_rings(lamps)
-    cut_areas = get_cut_areas(rings)
+    cut_areas = get_cut_areas(rings, tolerance=tolerance, padding=padding)
 
     for cut_area in cut_areas:
-        print(cut_area.get_cut_diams(tolerance))
+        print(cut_area.cut_diams)
 
     print(f"#rings (total):     {len(rings)}")
-    print(f"#cuts (total):      {sum([len(cut_area.get_cut_diams(tolerance)) for cut_area in cut_areas])}")
+    print(f"#cuts (total):      {sum([len(cut_area.cut_diams) for cut_area in cut_areas])}")
     print(f"#cut areas:         {len(cut_areas)}")
-    print(f"total cut length:   {sum([cut_area.get_total_cut_length(tolerance) for cut_area in cut_areas]) * 1e-3:.02f}m")
+    print(f"total cut length:   {sum([cut_area.total_cut_length for cut_area in cut_areas]) * 1e-3:.02f}m")
 
-    rings = np.stack([ring for cut_area in cut_areas for ring in cut_area.get_cut_rings(tolerance)], axis=0)
+    rings = np.stack([ring for cut_area in cut_areas for ring in cut_area.cut_rings], axis=0)
 
     if visualize:
         zmin = rings[:, 0].min() / 2 - 25
@@ -207,6 +338,9 @@ def main(visualize=False):
                         linewidth=lamps[lamp_idx].layer_thickness,
                         color='brown'
                     )
+
+        generate_drawing(cut_areas, work_area)
+
         plt.show()
 
 
