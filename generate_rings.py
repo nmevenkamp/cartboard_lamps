@@ -98,6 +98,82 @@ class CutArea:
             msp.add_circle(center, diam / 2)
 
 
+def SocketCutarea(CutArea):
+    def __init__(
+            self,
+            *args,
+            socket_diam: float,
+            socket_ring_width: float,
+            strut_width: float,
+            outer_ring: np.ndarray,
+            **kwargs
+    ):
+        super().__init__(*args, **kwargs)
+
+        self.socket_diam = socket_diam
+        self.socket_ring_width = socket_ring_width
+        self.strut_width = strut_width
+        self._rings = [outer_ring]
+
+    @property
+    def cut_diams(self) -> List[int]:
+        res = [self.rings[0][2]]
+        prev_diam = self.rings[0][2]
+        for ring in self.rings[1:]:
+            if ring[1] - prev_diam > 2 * self.tolerance:
+                res.append(ring[1])
+            res.append(ring[2])
+            prev_diam = ring[2]
+
+        return res
+
+    @property
+    def total_cut_length(self) -> float:
+        res = sum([np.pi * diam for diam in self.cut_diams])
+        return res  # TODO add arc lenghs of inner cuts
+
+    def plot(self, ax=None, x0=None):
+        if x0 is None:
+            x0 = np.zeros([2])
+        center = np.asarray([self.diameter / 2] * 2) + x0
+        if ax is None:
+            fig, ax = plt.subplots()
+
+        for diam in self.cut_diams:
+            circle = plt.Circle(center, diam / 2, color='black', fill=False)
+            ax.add_patch(circle)
+
+        # plot inner socket ring
+        circle = plt.Circle(center, self.socket_diam / 2, color='black', fill=False)
+        ax.add_path(circle)
+
+        # plot outer socket ring
+        # TODO: not the full circle is needed
+        circle = plt.Circle(center, self.socket_diam / 2 + self.socket_ring_width, color='black', fill=False)
+        ax.add_path(circle)
+
+        # plot inner circle of outer ring
+        # TODO: not the full circle is needed
+        circle = plt.Circle(center, self.rings[0][1] / 2, color='black', fill=False)
+        ax.add_path(circle)
+
+        # plot struts
+        # TODO: not the full struts are needed
+        for y in [center + self.strut_width / 2, center - self.strut_width / 2]:
+            line = plt.Line2D([center - self.rings[0][1] / 2, center + self.rings[0][1]], [y, y], color='black')
+            ax.add_path(line)
+
+    def add_to_dxf(self, msp: Modelspace, x0=None, layer: str = 'background'):
+        if x0 is None:
+            x0 = np.zeros([2])
+        center = np.asarray([self.diameter / 2] * 2) + x0
+
+        for diam in self.cut_diams:
+            msp.add_circle(center, diam / 2)
+
+        # TODO: add inner stuff to dxf
+
+
 def compute_rings(lamps: List[LampParams]) -> np.ndarray:
     lamp_arrays = []
     for lamp_idx, lamp_params in enumerate(lamps):
@@ -333,7 +409,7 @@ def main(visualize=False):
     ]
     tolerance = 4
     padding = 5
-    work_area = np.asarray([4000, 2000])
+    work_area = np.asarray([2000, 1000])
 
     rings = compute_rings(lamps)
     cut_areas = get_cut_areas(rings, tolerance=tolerance, padding=padding)
