@@ -18,13 +18,29 @@ class LampParams:
             layer_thickness=8,
             ring_width=15,
             sphere_opening_top=150,
-            sphere_opening_bottom=250
+            sphere_opening_bottom=250,
+            socket_diam=40,
+            socket_ring_width=20,
+            strut_width=60,
+            socket_layer_indices=None,
+            bulb_length=170,
+            bulb_diameter=125
     ):
         self.sphere_diameter = sphere_diameter
         self.layer_thickness = layer_thickness
         self.ring_width = ring_width
         self.sphere_opening_top = sphere_opening_top
         self.sphere_opening_bottom = sphere_opening_bottom
+        self.socket_diam = socket_diam
+        self.socket_ring_width = socket_ring_width
+        self.strut_width = strut_width
+        self.socket_layer_indices = socket_layer_indices if socket_layer_indices is not None else [3, 4]
+        self.bulb_length = bulb_length
+        self.bulb_diameter = bulb_diameter
+
+    @property
+    def socket_length(self) -> int:
+        return self.bulb_length - self.bulb_diameter
 
 
 class CutArea:
@@ -72,6 +88,10 @@ class CutArea:
         return max([ring[2] for ring in self.rings])
 
     @property
+    def inner_diameter(self) -> int:
+        return min([ring[1] for ring in self.rings])
+
+    @property
     def job_diameter(self) -> int:
         return max([ring[2] for ring in self.rings]) + 2 * self.padding
 
@@ -98,7 +118,7 @@ class CutArea:
             msp.add_circle(center, diam / 2)
 
 
-def SocketCutarea(CutArea):
+class SocketCutarea(CutArea):
     def __init__(
             self,
             *args,
@@ -114,6 +134,10 @@ def SocketCutarea(CutArea):
         self.socket_ring_width = socket_ring_width
         self.strut_width = strut_width
         self._rings = [outer_ring]
+
+    @property
+    def inner_diameter(self) -> int:
+        return 0
 
     @property
     def cut_diams(self) -> List[int]:
@@ -145,23 +169,23 @@ def SocketCutarea(CutArea):
 
         # plot inner socket ring
         circle = plt.Circle(center, self.socket_diam / 2, color='black', fill=False)
-        ax.add_path(circle)
+        ax.add_patch(circle)
 
         # plot outer socket ring
         # TODO: not the full circle is needed
         circle = plt.Circle(center, self.socket_diam / 2 + self.socket_ring_width, color='black', fill=False)
-        ax.add_path(circle)
+        ax.add_patch(circle)
 
         # plot inner circle of outer ring
         # TODO: not the full circle is needed
         circle = plt.Circle(center, self.rings[0][1] / 2, color='black', fill=False)
-        ax.add_path(circle)
+        ax.add_patch(circle)
 
-        # plot struts
-        # TODO: not the full struts are needed
-        for y in [center + self.strut_width / 2, center - self.strut_width / 2]:
-            line = plt.Line2D([center - self.rings[0][1] / 2, center + self.rings[0][1]], [y, y], color='black')
-            ax.add_path(line)
+        # # plot struts
+        # # TODO: not the full struts are needed
+        # for y in [center + self.strut_width / 2, center - self.strut_width / 2]:
+        #     line = plt.Line2D([center - self.rings[0][1] / 2, center + self.rings[0][1]], [y, y], color='black')
+        #     ax.add_line(line)
 
     def add_to_dxf(self, msp: Modelspace, x0=None, layer: str = 'background'):
         if x0 is None:
@@ -226,6 +250,24 @@ def compute_rings(lamps: List[LampParams]) -> np.ndarray:
     return res
 
 
+def split_rings(rings: np.ndarray, lamps: List[LampParams]) -> Tuple[np.ndarray, np.ndarray]:
+    strut_rings = []
+    new_rings = None
+    for lamp_idx, lamp in enumerate(lamps):
+        lamp_rings = rings[rings[:, 3] == lamp_idx]
+        lamp_rings = lamp_rings[lamp_rings[:, -1].argsort()]
+        lamp_rings = np.flip(lamp_rings, axis=0)
+        for idx in lamp.socket_layer_indices:
+            strut_rings.append(lamp_rings[idx])
+        lamp_rings = np.delete(lamp_rings, lamp.socket_layer_indices, axis=0)
+        if new_rings is None:
+            new_rings = lamp_rings
+        else:
+            new_rings = np.vstack([new_rings, lamp_rings])
+
+    return new_rings, np.vstack(strut_rings)
+
+
 def get_cut_areas(rings: np.ndarray, **kwargs) -> List[CutArea]:
     rings = rings.copy()
 
@@ -258,6 +300,22 @@ def get_cut_area(rings: np.ndarray, **kwargs) -> Tuple[np.ndarray, CutArea]:
         idx = np.where(np.logical_and(rings[:, 1] == d_i, rings[:, 2] == d_o))[0][0]
         cut_area.add_ring(rings[idx])
         rings = np.delete(rings, idx, axis=0)
+
+
+def merge_cut_areas(cut_areas: List[CutArea]) -> List[CutArea]:
+    max_inner_diam = max([cut_area.inner_diameter for cut_area in cut_areas])
+    fitting_outer_diams = [cut_area.diameter for cut_area in cut_areas if cut_area.diameter <= max_inner_diam]
+    while fitting_outer_diams:
+        outer_diam = max(fitting_outer_diams)
+        cut_area = [cut_area for cut_area in cut_areas if cut_area.diameter == outer_diam][0]
+        other = [cut_area for cut_area in cut_areas if cut_area.inner_diameter == max_inner_diam][0]
+        cut_area._rings += other.rings
+        cut_areas.remove(other)
+
+        max_inner_diam = max([cut_area.inner_diameter for cut_area in cut_areas])
+        fitting_outer_diams = [cut_area.diameter for cut_area in cut_areas if cut_area.diameter <= max_inner_diam]
+
+    return cut_areas
 
 
 class Job:
@@ -323,20 +381,17 @@ class Job:
         return cas
 
     def plot(self, ax):
-        ax.axis('equal')
-
+        ax.set_aspect('equal', 'box')
         if self.work_area[0] == np.infty:
-            x0 = np.zeros(2)
             size = self.size
         else:
-            x0 = (self.work_area - self.size) / 2
             size = self.work_area
 
         ax.set_xlim((0, size[0]))
         ax.set_ylim((0, size[1]))
 
         for cut_area, corner in zip(self._cut_areas, self._top_left_corners):
-            cut_area.plot(ax=ax, x0=x0 + corner)
+            cut_area.plot(ax=ax, x0=corner)
 
     def save_dxf(self, filename: str):
         doc = ezdxf.new()
@@ -390,21 +445,39 @@ def main(visualize=False):
             layer_thickness=7,
             ring_width=15,
             sphere_opening_top=95,
-            sphere_opening_bottom=115
+            sphere_opening_bottom=115,
+            socket_diam=40,
+            socket_ring_width=20,
+            strut_width=60,
+            socket_layer_indices=[5, 6],
+            bulb_diameter=95,
+            bulb_length=135
         ),
         LampParams(
             sphere_diameter=360,
             layer_thickness=7,
             ring_width=15,
             sphere_opening_top=115,
-            sphere_opening_bottom=170
+            sphere_opening_bottom=170,
+            socket_diam=40,
+            socket_ring_width=20,
+            strut_width=60,
+            socket_layer_indices=[10, 11],
+            bulb_diameter=95,
+            bulb_length=135
         ),
         LampParams(
             sphere_diameter=450,
             layer_thickness=7,
             ring_width=15,
             sphere_opening_top=150,
-            sphere_opening_bottom=235
+            sphere_opening_bottom=235,
+            socket_diam=40,
+            socket_ring_width=20,
+            strut_width=60,
+            socket_layer_indices=[13, 14],
+            bulb_diameter=125,
+            bulb_length=175
         )
     ]
     tolerance = 4
@@ -412,37 +485,70 @@ def main(visualize=False):
     work_area = np.asarray([2000, 1000])
 
     rings = compute_rings(lamps)
+
+    rings, strut_rings = split_rings(rings, lamps)
     cut_areas = get_cut_areas(rings, tolerance=tolerance, padding=padding)
+    for lamp_idx, lamp in enumerate(lamps):
+        for ring in strut_rings[strut_rings[:, 3] == lamp_idx]:
+            cut_areas.append(
+                SocketCutarea(
+                    socket_diam=lamp.socket_diam,
+                    socket_ring_width=lamp.socket_ring_width,
+                    strut_width=lamp.strut_width,
+                    outer_ring=ring
+                )
+            )
+    cut_areas = merge_cut_areas(cut_areas)
+
+    all_rings = np.stack([ring for cut_area in cut_areas for ring in cut_area.cut_rings], axis=0)
 
     for cut_area in cut_areas:
         print(cut_area.cut_diams)
 
-    print(f"#rings (total):     {len(rings)}")
+    for lamp_idx, lamp in enumerate(lamps):
+        print(f"Lamp #{lamp_idx + 1} has {len(all_rings[all_rings[:, 3] == lamp_idx])} rings")
+
+    print(f"#rings (total):     {len(all_rings)}")
     print(f"#cuts (total):      {sum([len(cut_area.cut_diams) for cut_area in cut_areas])}")
     print(f"#cut areas:         {len(cut_areas)}")
     print(f"total cut length:   {sum([cut_area.total_cut_length for cut_area in cut_areas]) * 1e-3:.02f}m")
 
-    rings = np.stack([ring for cut_area in cut_areas for ring in cut_area.cut_rings], axis=0)
-
     if visualize:
-        zmin = rings[:, 0].min() / 2 - 25
-        zmax = rings[:, 0].max() / 2 + 25
-        xmax = rings[:, 2].max() / 2 + 25
-        xmin = -xmax - 25
+        zmin = all_rings[:, 0].min() - 25
+        zmax = all_rings[:, 0].max() + 25
+        xmax = all_rings[:, 2].max() / 2 + 25
+        xmin = -xmax
         fig, ax = plt.subplots(1, 3)
         plt.suptitle("cardboard lamps")
-        for lamp_idx in range(len(lamps)):
-            ax[lamp_idx].axis('equal')
+        for lamp_idx, lamp in enumerate(lamps):
+            ax[lamp_idx].set_aspect('equal', 'box')
             ax[lamp_idx].set_xlim(xmin, xmax)
             ax[lamp_idx].set_ylim(zmin, zmax)
-            arr = rings[rings[:, 3] == lamp_idx][:, :3]
-            for z, d_i, d_o in arr:
+            arr = rings[rings[:, 3] == lamp_idx]
+            for z, d_i, d_o, *_ in arr:
                 for sign in {-1, 1}:
                     ax[lamp_idx].plot(
                         [sign * d_i / 2, sign * d_o / 2], [z, z],
-                        linewidth=lamps[lamp_idx].layer_thickness,
+                        linewidth=lamp.layer_thickness,
                         color='brown'
                     )
+            for z, _, d_o, *_ in strut_rings[strut_rings[:, 3] == lamp_idx]:
+                ax[lamp_idx].plot(
+                    [-d_o / 2, d_o / 2], [z, z],
+                    linewidth=lamp.layer_thickness,
+                    color='brown'
+                )
+
+            z_strut = min(strut_rings[strut_rings[:, 3] == lamp_idx][:, 0]) - lamp.layer_thickness / 2
+            for sign in {-1, 1}:
+                ax[lamp_idx].plot(
+                    [sign * 27 / 2, sign * 27 / 2], [z_strut, z_strut - lamp.socket_length],
+                    linewidth=1,
+                    color='black'
+                )
+            center = [0, z_strut - lamp.socket_length - lamp.bulb_diameter / 2]
+            circle = plt.Circle(center, lamp.bulb_diameter / 2, color='yellow', fill=True)
+            ax[lamp_idx].add_patch(circle)
 
         timestr = time.strftime("%Y%m%d-%H%M%S")
         generate_drawing(cut_areas, work_area, out_dir=os.path.join("output", timestr))
