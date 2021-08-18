@@ -1,9 +1,11 @@
+import math
 import os
 import time
 from typing import List, Optional, Tuple
 
 import ezdxf
 import matplotlib.pyplot as plt
+import matplotlib.patches as patches
 import numpy as np
 from ezdxf import units
 from ezdxf.layouts import Modelspace
@@ -15,7 +17,7 @@ class LampParams:
     def __init__(
             self,
             sphere_diameter=450,
-            layer_thickness=8,
+            layer_thickness=7,
             ring_width=15,
             sphere_opening_top=150,
             sphere_opening_bottom=250,
@@ -126,6 +128,8 @@ class SocketCutarea(CutArea):
             socket_ring_width: float,
             strut_width: float,
             outer_ring: np.ndarray,
+            outer_ring_corner_diam: float = 0,
+            socket_ring_corner_diam: float = 0,
             **kwargs
     ):
         super().__init__(*args, **kwargs)
@@ -133,6 +137,8 @@ class SocketCutarea(CutArea):
         self.socket_diam = socket_diam
         self.socket_ring_width = socket_ring_width
         self.strut_width = strut_width
+        self.outer_ring_corner_diam = outer_ring_corner_diam
+        self.socket_ring_corner_diam = socket_ring_corner_diam
         self._rings = [outer_ring]
 
     @property
@@ -171,21 +177,63 @@ class SocketCutarea(CutArea):
         circle = plt.Circle(center, self.socket_diam / 2, color='black', fill=False)
         ax.add_patch(circle)
 
+        # compute intersection points
+        r_inner = self.socket_diam / 2 + self.socket_ring_width
+        r_outer = self.rings[0][1] / 2
+        x_intersect_inner = np.sqrt(r_inner ** 2 - (self.strut_width / 2) ** 2)
+        x_intersect_outer = np.sqrt((r_outer - self.outer_ring_corner_diam / 2) ** 2 - (self.strut_width / 2 + self.outer_ring_corner_diam / 2) ** 2)
+        # TODO: also add inner rounded corner (between strut and socket ring)
+        # TODO: simplify code by moving geometric computations to separate function to get all the necessary points at once
+
         # plot outer socket ring
-        # TODO: not the full circle is needed
-        circle = plt.Circle(center, self.socket_diam / 2 + self.socket_ring_width, color='black', fill=False)
-        ax.add_patch(circle)
+        radius = self.socket_diam / 2 + self.socket_ring_width
+        for sign in {-1, 1}:
+            p1 = [sign * x_intersect_inner, sign * self.strut_width / 2]
+            theta1 = math.atan2(p1[1], p1[0]) * 180 / np.pi
+            p2 = [-sign * x_intersect_inner, sign * self.strut_width / 2]
+            theta2 = math.atan2(p2[1], p2[0]) * 180 / np.pi
+            arc = patches.Arc(center, 2 * radius, 2 * radius, angle=0.0, theta1=theta1, theta2=theta2)
+            ax.add_patch(arc)
 
         # plot inner circle of outer ring
-        # TODO: not the full circle is needed
-        circle = plt.Circle(center, self.rings[0][1] / 2, color='black', fill=False)
-        ax.add_patch(circle)
+        radius = self.rings[0][1] / 2
+        for sign in {-1, 1}:
+            y = sign * (self.strut_width / 2 + self.outer_ring_corner_diam / 2)
+            c = np.asarray([x_intersect_outer, y])
+            c *= r_outer / np.linalg.norm(c)
+            p1 = [c[0], c[1]]
+            theta1 = math.atan2(p1[1], p1[0]) * 180 / np.pi
+            p2 = [-c[0], c[1]]
+            theta2 = math.atan2(p2[1], p2[0]) * 180 / np.pi
+            if sign < 1:
+                theta1, theta2 = theta2, theta1
+            arc = patches.Arc(center, 2 * radius, 2 * radius, angle=0.0, theta1=theta1, theta2=theta2)
+            ax.add_patch(arc)
 
-        # # plot struts
-        # # TODO: not the full struts are needed
-        # for y in [center + self.strut_width / 2, center - self.strut_width / 2]:
-        #     line = plt.Line2D([center - self.rings[0][1] / 2, center + self.rings[0][1]], [y, y], color='black')
-        #     ax.add_line(line)
+        # plot struts
+        for y in [center[1] + self.strut_width / 2, center[1] - self.strut_width / 2]:
+            for sign in {-1, 1}:
+                line = plt.Line2D(
+                    [center[0] + sign * x_intersect_inner, center[0] + sign * x_intersect_outer],
+                    [y, y],
+                    color='black'
+                )
+                ax.add_line(line)
+
+        # plot outer ring corner circle (if needed)
+        if self.outer_ring_corner_diam > 0:
+            for x_sign in {-1, 1}:
+                for y_sign in {-1, 1}:
+                    y = y_sign * (self.strut_width / 2 + self.outer_ring_corner_diam / 2)
+                    c = np.asarray([x_sign * x_intersect_outer, y])
+                    p1 = [0, -y_sign * (self.strut_width / 2)]
+                    theta1 = math.atan2(p1[1], p1[0]) * 180 / np.pi
+                    p2 = c / np.linalg.norm(c) * r_outer
+                    theta2 = math.atan2(p2[1], p2[0]) * 180 / np.pi
+                    if x_sign * y_sign == -1:
+                        theta1, theta2 = theta2, theta1
+                    arc = patches.Arc(center + c, self.outer_ring_corner_diam, self.outer_ring_corner_diam, angle=0.0, theta1=theta1, theta2=theta2)
+                    ax.add_patch(arc)
 
     def add_to_dxf(self, msp: Modelspace, x0=None, layer: str = 'background'):
         if x0 is None:
@@ -556,5 +604,29 @@ def main(visualize=False):
         plt.show()
 
 
+def show_socket_cut_area():
+    cut_area = SocketCutarea(
+        socket_diam=40,
+        socket_ring_width=25,
+        strut_width=50,
+        outer_ring=np.asarray([0, 200, 215, 0, 0, 0]),
+        outer_ring_corner_diam=20,
+        tolerance=0,
+        padding=0
+    )
+
+    fig, ax = plt.subplots(1)
+    fig.suptitle("technical drawing")
+
+    ax.set_aspect('equal', 'box')
+    ax.set_xlim((0, cut_area.diameter))
+    ax.set_ylim((0, cut_area.diameter))
+
+    cut_area.plot(ax=ax, x0=np.zeros(2))
+
+    plt.show()
+
+
 if __name__ == "__main__":
-    main(visualize=True)
+    # main(visualize=True)
+    show_socket_cut_area()
