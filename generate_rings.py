@@ -608,7 +608,7 @@ def show_socket_cut_area():
     cut_area = SocketCutarea(
         socket_diam=40,
         socket_ring_width=25,
-        strut_width=50,
+        strut_width=40,
         outer_ring=np.asarray([0, 200, 215, 0, 0, 0]),
         outer_ring_corner_diam=20,
         tolerance=0,
