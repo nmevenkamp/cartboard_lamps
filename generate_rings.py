@@ -437,7 +437,7 @@ class Job:
             ca = max(candidates, key=lambda ca: len(ca))
             cas.remove(ca)
             self._cut_areas.append(ca)
-            self._top_left_corners.append(np.asarray([x0, y0]))
+            self._top_left_corners.append(np.asarray([x0 + ca.padding, y0 + ca.padding]))
             row_max_diam = max(row_max_diam, ca.job_diameter)
             x0 += ca.job_diameter
 
@@ -471,6 +471,9 @@ class Job:
 
 
 def get_jobs(cut_areas: List[CutArea], work_area: Optional[np.ndarray] = None) -> List[Job]:
+    if work_area is None:
+        work_area = np.asarray([np.infty] * 2)
+
     if max([cut_area.diameter for cut_area in cut_areas]) > work_area[:].min():
         raise ValueError("Work area is too small!")
 
@@ -484,12 +487,7 @@ def get_jobs(cut_areas: List[CutArea], work_area: Optional[np.ndarray] = None) -
     return jobs
 
 
-def generate_drawing(cut_areas: List[CutArea], work_area=None, out_dir: str = None):
-    if work_area is None:
-        work_area = np.asarray([np.infty] * 2)
-
-    jobs = get_jobs(cut_areas, work_area)
-
+def generate_drawing(jobs: List[Job], out_dir: str = None):
     fig, axs = plt.subplots(len(jobs))
     fig.suptitle("technical drawing")
     if not isinstance(axs, np.ndarray):
@@ -505,7 +503,7 @@ def main(visualize=False):
     lamps = [
         LampParams(
             sphere_diameter=270,
-            layer_thickness=7,
+            layer_thickness=6.7,
             ring_width=15,
             sphere_opening_top=95,
             sphere_opening_bottom=115,
@@ -518,8 +516,8 @@ def main(visualize=False):
         ),
         LampParams(
             sphere_diameter=360,
-            layer_thickness=7,
-            ring_width=15,
+            layer_thickness=6.7,
+            ring_width=16,
             sphere_opening_top=115,
             sphere_opening_bottom=170,
             socket_diam=40,
@@ -531,8 +529,8 @@ def main(visualize=False):
         ),
         LampParams(
             sphere_diameter=450,
-            layer_thickness=7,
-            ring_width=15,
+            layer_thickness=6.7,
+            ring_width=20,
             sphere_opening_top=150,
             sphere_opening_bottom=235,
             socket_diam=40,
@@ -544,8 +542,8 @@ def main(visualize=False):
         )
     ]
     tolerance = 4
-    padding = 5
-    work_area = np.asarray([2000, 1000])
+    padding = 10
+    work_area = np.asarray([940, 565])
 
     rings = compute_rings(lamps)
 
@@ -558,10 +556,13 @@ def main(visualize=False):
                     socket_diam=lamp.socket_diam,
                     socket_ring_width=lamp.socket_ring_width,
                     strut_width=lamp.strut_width,
-                    outer_ring=ring
+                    outer_ring=ring,
+                    tolerance=tolerance,
+                    padding=padding
                 )
             )
     cut_areas = merge_cut_areas(cut_areas)
+    jobs = get_jobs(cut_areas, work_area)
 
     all_rings = np.stack([ring for cut_area in cut_areas for ring in cut_area.cut_rings], axis=0)
 
@@ -574,6 +575,7 @@ def main(visualize=False):
     print(f"#rings (total):     {len(all_rings)}")
     print(f"#cuts (total):      {sum([len(cut_area.cut_diams) for cut_area in cut_areas])}")
     print(f"#cut areas:         {len(cut_areas)}")
+    print(f"#jobs:              {len(jobs)}")
     print(f"total cut length:   {sum([cut_area.total_cut_length for cut_area in cut_areas]) * 1e-3:.02f}m")
 
     if visualize:
@@ -614,7 +616,7 @@ def main(visualize=False):
             ax[lamp_idx].add_patch(circle)
 
         timestr = time.strftime("%Y%m%d-%H%M%S")
-        generate_drawing(cut_areas, work_area, out_dir=os.path.join("output", timestr))
+        generate_drawing(jobs, out_dir=os.path.join("output", timestr))
 
         plt.show()
 
@@ -644,5 +646,4 @@ def show_socket_cut_area():
 
 
 if __name__ == "__main__":
-    # main(visualize=True)
-    show_socket_cut_area()
+    main(visualize=True)
