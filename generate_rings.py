@@ -10,23 +10,21 @@ import numpy as np
 from ezdxf import units
 from ezdxf.layouts import Modelspace
 
-from utils import data_linewidth_plot
-
 
 class LampParams:
     def __init__(
             self,
-            sphere_diameter=450,
-            layer_thickness=7,
-            ring_width=15,
-            sphere_opening_top=150,
-            sphere_opening_bottom=250,
-            socket_diam=40,
-            socket_ring_width=20,
-            strut_width=60,
-            socket_layer_indices=None,
-            bulb_length=170,
-            bulb_diameter=125
+            sphere_diameter: float = 450,
+            layer_thickness: float = 7,
+            ring_width: float = 15,
+            sphere_opening_top: float = 150,
+            sphere_opening_bottom: float = 250,
+            socket_diam: float = 40,
+            socket_ring_width: float = 20,
+            strut_width: float = 60,
+            socket_layer_indices: Optional[List[int]] = None,
+            bulb_length: float = 170,
+            bulb_diameter: float = 125
     ):
         self.sphere_diameter = sphere_diameter
         self.layer_thickness = layer_thickness
@@ -41,7 +39,7 @@ class LampParams:
         self.bulb_diameter = bulb_diameter
 
     @property
-    def socket_length(self) -> int:
+    def socket_length(self) -> float:
         return self.bulb_length - self.bulb_diameter
 
 
@@ -99,6 +97,9 @@ class CutArea:
 
     def add_ring(self, ring: np.ndarray):
         self._rings.append(ring)
+
+    def add_rings(self, rings: List[np.ndarray]):
+        self._rings += rings
 
     def plot(self, ax=None, x0=None):
         if x0 is None:
@@ -372,7 +373,7 @@ def merge_cut_areas(cut_areas: List[CutArea]) -> List[CutArea]:
         outer_diam = max(fitting_outer_diams)
         cut_area = [cut_area for cut_area in cut_areas if cut_area.diameter == outer_diam][0]
         other = [cut_area for cut_area in cut_areas if cut_area.inner_diameter == max_inner_diam][0]
-        cut_area._rings += other.rings
+        cut_area.add_rings(other.rings)
         cut_areas.remove(other)
 
         max_inner_diam = max([cut_area.inner_diameter for cut_area in cut_areas])
@@ -611,7 +612,7 @@ def main(visualize=False):
                     linewidth=1,
                     color='black'
                 )
-            center = [0, z_strut - lamp.socket_length - lamp.bulb_diameter / 2]
+            center = (0.0, z_strut - lamp.socket_length - lamp.bulb_diameter / 2)
             circle = plt.Circle(center, lamp.bulb_diameter / 2, color='yellow', fill=True)
             ax[lamp_idx].add_patch(circle)
 
