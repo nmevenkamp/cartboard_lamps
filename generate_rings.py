@@ -4,6 +4,7 @@ import time
 from typing import List, Optional, Tuple
 
 import ezdxf
+from matplotlib.axes import Axes
 import matplotlib.pyplot as plt
 import matplotlib.patches as patches
 import numpy as np
@@ -22,6 +23,8 @@ class LampParams:
             socket_diam: float = 40,
             socket_ring_width: float = 20,
             strut_width: float = 60,
+            outer_ring_corner_diam: float = 25,
+            socket_ring_corner_diam: float = 10,
             socket_layer_indices: Optional[List[int]] = None,
             bulb_length: float = 170,
             bulb_diameter: float = 125
@@ -34,6 +37,8 @@ class LampParams:
         self.socket_diam = socket_diam
         self.socket_ring_width = socket_ring_width
         self.strut_width = strut_width
+        self.outer_ring_corner_diam = outer_ring_corner_diam
+        self.socket_ring_corner_diam = socket_ring_corner_diam
         self.socket_layer_indices = socket_layer_indices if socket_layer_indices is not None else [3, 4]
         self.bulb_length = bulb_length
         self.bulb_diameter = bulb_diameter
@@ -102,23 +107,28 @@ class CutArea:
         self._rings += rings
 
     def plot(self, ax=None, x0=None):
-        if x0 is None:
-            x0 = np.zeros([2])
-        center = np.asarray([self.diameter / 2] * 2) + x0
         if ax is None:
-            fig, ax = plt.subplots()
+            _, ax = plt.subplots()
 
-        for diam in self.cut_diams:
-            circle = plt.Circle(center, diam / 2, color='black', fill=False)
-            ax.add_patch(circle)
+        self._draw(ax, x0)
 
     def add_to_dxf(self, msp: Modelspace, x0=None, layer: str = 'background'):
+        self._draw(msp, x0)
+
+    def _draw(self, obj, x0):
         if x0 is None:
             x0 = np.zeros([2])
         center = np.asarray([self.diameter / 2] * 2) + x0
 
         for diam in self.cut_diams:
-            msp.add_circle(center, diam / 2)
+            self._add_circle(obj, center, diam / 2)
+
+    @staticmethod
+    def _add_circle(obj, center, radius):
+        if isinstance(obj, Axes):
+            obj.add_patch(plt.Circle(center, radius, color='black', fill=False))
+        elif isinstance(obj, Modelspace):
+            obj.add_circle(center, radius)
 
 
 class SocketCutarea(CutArea):
@@ -163,42 +173,24 @@ class SocketCutarea(CutArea):
         res = sum([np.pi * diam for diam in self.cut_diams])
         return res  # TODO add arc lenghs of inner cuts
 
-    def _get_points_outer(self):
-        r_outer = self.rings[0][1] / 2
-        y_strut = self.strut_width / 2
-        r_corner = self.outer_ring_corner_diam / 2
-        y_corner = y_strut + r_corner
-        p_corner = np.asarray([np.sqrt((r_outer - r_corner) ** 2 - y_corner ** 2), y_corner])
-        p_strut = np.asarray([p_corner[0], y_strut])
-        p_outer = p_corner / np.linalg.norm(p_corner) * r_outer
-
-        return p_strut, p_outer, p_corner
-
-    def _get_points_inner(self):
-        r_inner = self.socket_diam / 2 + self.socket_ring_width
-        y_strut = self.strut_width / 2
-        r_corner = self.socket_ring_corner_diam / 2
-        y_corner = y_strut + r_corner
-        p_corner = np.asarray([np.sqrt((r_inner + r_corner) ** 2 - y_corner ** 2), y_corner])
-        p_strut = np.asarray([p_corner[0], y_strut])
-        p_inner = p_corner / np.linalg.norm(p_corner) * r_inner
-
-        return p_strut, p_inner, p_corner
-
     def plot(self, ax=None, x0=None):
+        if ax is None:
+            _, ax = plt.subplots()
+
+        self._draw(ax, x0)
+
+    def add_to_dxf(self, msp: Modelspace, x0=None, layer: str = 'background'):
+        self._draw(msp, x0)
+
+    def _draw(self, obj, x0):
         if x0 is None:
             x0 = np.zeros([2])
         center = np.asarray([self.diameter / 2] * 2) + x0
-        if ax is None:
-            fig, ax = plt.subplots()
 
-        for diam in self.cut_diams:
-            circle = plt.Circle(center, diam / 2, color='black', fill=False)
-            ax.add_patch(circle)
+        super()._draw(obj, x0)
 
         # plot inner socket ring
-        circle = plt.Circle(center, self.socket_diam / 2, color='black', fill=False)
-        ax.add_patch(circle)
+        self._add_circle(obj, center, self.socket_diam / 2)
 
         # compute intersection points
         p_strut_outer, p_outer, p_corner_outer = self._get_points_outer()
@@ -215,18 +207,13 @@ class SocketCutarea(CutArea):
                 theta2 = math.atan2(p2[1], p2[0]) * 180 / np.pi
                 if sign == -1:
                     theta1, theta2 = theta2, theta1
-                arc = patches.Arc(center, d, d, angle=0.0, theta1=theta1, theta2=theta2)
-                ax.add_patch(arc)
+                self._add_arc(obj, center, d, theta1, theta2)
 
         # plot struts
         for x_sign in {-1, 1}:
             for y_sign in {-1, 1}:
-                line = plt.Line2D(
-                    [center[0] + x_sign * p_strut_inner[0], center[0] + x_sign * p_strut_outer[0]],
-                    [center[1] + y_sign * p_strut_inner[1], center[1] + y_sign * p_strut_inner[1]],
-                    color='black'
-                )
-                ax.add_line(line)
+                v_sign = np.asarray([x_sign, y_sign])
+                self._add_line(obj, center + v_sign * p_strut_inner, center + v_sign * p_strut_outer)
 
         # plot corner circles (if needed)
         for p_strut, p_circle, p_corner, diam, theta_sign in zip(
@@ -248,18 +235,43 @@ class SocketCutarea(CutArea):
                     theta2 = math.atan2(p2[1], p2[0]) * 180 / np.pi
                     if x_sign * y_sign * theta_sign == -1:
                         theta1, theta2 = theta2, theta1
-                    arc = patches.Arc(center + p_corner * v_sign, diam, diam, angle=0.0, theta1=theta1, theta2=theta2)
-                    ax.add_patch(arc)
+                    self._add_arc(obj, center + p_corner * v_sign, diam, theta1, theta2)
 
-    def add_to_dxf(self, msp: Modelspace, x0=None, layer: str = 'background'):
-        if x0 is None:
-            x0 = np.zeros([2])
-        center = np.asarray([self.diameter / 2] * 2) + x0
+    def _get_points_inner(self):
+        r_inner = self.socket_diam / 2 + self.socket_ring_width
+        y_strut = self.strut_width / 2
+        r_corner = self.socket_ring_corner_diam / 2
+        y_corner = y_strut + r_corner
+        p_corner = np.asarray([np.sqrt((r_inner + r_corner) ** 2 - y_corner ** 2), y_corner])
+        p_strut = np.asarray([p_corner[0], y_strut])
+        p_inner = p_corner / np.linalg.norm(p_corner) * r_inner
 
-        for diam in self.cut_diams:
-            msp.add_circle(center, diam / 2)
+        return p_strut, p_inner, p_corner
 
-        # TODO: add inner stuff to dxf
+    def _get_points_outer(self):
+        r_outer = self.rings[0][1] / 2
+        y_strut = self.strut_width / 2
+        r_corner = self.outer_ring_corner_diam / 2
+        y_corner = y_strut + r_corner
+        p_corner = np.asarray([np.sqrt((r_outer - r_corner) ** 2 - y_corner ** 2), y_corner])
+        p_strut = np.asarray([p_corner[0], y_strut])
+        p_outer = p_corner / np.linalg.norm(p_corner) * r_outer
+
+        return p_strut, p_outer, p_corner
+
+    @staticmethod
+    def _add_arc(obj, center, diameter, start_angle, end_angle):
+        if isinstance(obj, Axes):
+            obj.add_patch(patches.Arc(center, diameter, diameter, angle=0.0, theta1=start_angle, theta2=end_angle))
+        elif isinstance(obj, Modelspace):
+            obj.add_arc(center, diameter / 2, start_angle, end_angle)
+
+    @staticmethod
+    def _add_line(obj, start, end):
+        if isinstance(obj, Axes):
+            obj.add_line(plt.Line2D([start[0], end[0]], [start[1], end[1]], color='black'))
+        else:
+            obj.add_line(start, end)
 
 
 def compute_rings(lamps: List[LampParams]) -> np.ndarray:
@@ -466,7 +478,7 @@ class Job:
         msp = doc.modelspace()
 
         for cut_area, corner in zip(self._cut_areas, self._top_left_corners):
-            cut_area.add_to_dxf(msp=msp)
+            cut_area.add_to_dxf(msp=msp, x0=corner)
 
         doc.saveas(filename)
 
@@ -509,8 +521,10 @@ def main(visualize=False):
             sphere_opening_top=95,
             sphere_opening_bottom=115,
             socket_diam=40,
-            socket_ring_width=20,
-            strut_width=60,
+            socket_ring_width=25,
+            strut_width=40,
+            outer_ring_corner_diam=25,
+            socket_ring_corner_diam=10,
             socket_layer_indices=[5, 6],
             bulb_diameter=95,
             bulb_length=135
@@ -522,8 +536,10 @@ def main(visualize=False):
             sphere_opening_top=115,
             sphere_opening_bottom=170,
             socket_diam=40,
-            socket_ring_width=20,
-            strut_width=60,
+            socket_ring_width=25,
+            strut_width=40,
+            outer_ring_corner_diam=25,
+            socket_ring_corner_diam=10,
             socket_layer_indices=[10, 11],
             bulb_diameter=95,
             bulb_length=135
@@ -535,8 +551,10 @@ def main(visualize=False):
             sphere_opening_top=150,
             sphere_opening_bottom=235,
             socket_diam=40,
-            socket_ring_width=20,
-            strut_width=60,
+            socket_ring_width=25,
+            strut_width=40,
+            outer_ring_corner_diam=25,
+            socket_ring_corner_diam=10,
             socket_layer_indices=[13, 14],
             bulb_diameter=125,
             bulb_length=175
@@ -558,6 +576,8 @@ def main(visualize=False):
                     socket_ring_width=lamp.socket_ring_width,
                     strut_width=lamp.strut_width,
                     outer_ring=ring,
+                    outer_ring_corner_diam=lamp.outer_ring_corner_diam,
+                    socket_ring_corner_diam=lamp.socket_ring_corner_diam,
                     tolerance=tolerance,
                     padding=padding
                 )
