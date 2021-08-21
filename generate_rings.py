@@ -170,7 +170,7 @@ class SocketCutarea(CutArea):
 
     @property
     def total_cut_length(self) -> float:
-        res = sum([np.pi * diam for diam in self.cut_diams])
+        res = super().total_cut_length
         return res  # TODO add arc lenghs of inner cuts
 
     def plot(self, ax=None, x0=None):
@@ -410,6 +410,13 @@ class Job:
     def size(self) -> np.ndarray:
         return self._top_left_corners[-1] + self._cut_areas[-1].diameter
 
+    @property
+    def lims(self) -> np.ndarray:
+        if self.work_area[0] == np.infty:
+            return self.size
+        else:
+            return self.work_area
+
     def assign_cut_areas(self, cut_areas: List[CutArea]) -> List[CutArea]:
         if max([cut_area.diameter for cut_area in cut_areas]) > self.work_area[:].min():
             raise ValueError("Work area is too small!")
@@ -458,13 +465,9 @@ class Job:
 
     def plot(self, ax):
         ax.set_aspect('equal', 'box')
-        if self.work_area[0] == np.infty:
-            size = self.size
-        else:
-            size = self.work_area
 
-        ax.set_xlim((0, size[0]))
-        ax.set_ylim((0, size[1]))
+        ax.set_xlim((0, self.lims[0]))
+        ax.set_ylim((0, self.lims[1]))
 
         for cut_area, corner in zip(self._cut_areas, self._top_left_corners):
             cut_area.plot(ax=ax, x0=corner)
@@ -500,12 +503,21 @@ def get_jobs(cut_areas: List[CutArea], work_area: Optional[np.ndarray] = None) -
     return jobs
 
 
-def generate_drawing(jobs: List[Job], out_dir: str = None):
-    fig, axs = plt.subplots(len(jobs))
+def generate_drawing(jobs: List[Job], out_dir: str = None, plot_aspect_ratio: float = 16 / 9):
+    njobs = len(jobs)
+    nrows = int(np.floor(np.sqrt(njobs / plot_aspect_ratio)))
+    ncols = int(np.ceil(njobs / nrows))
+
+    fig, axs = plt.subplots(nrows=nrows, ncols=ncols)
+    for idx in range(njobs, nrows * ncols):
+        fig.delaxes(axs[np.unravel_index(idx, [nrows, ncols])])
+
     fig.suptitle("technical drawing")
     if not isinstance(axs, np.ndarray):
         axs = np.asarray([axs])
-    for idx, (job, ax) in enumerate(zip(jobs, axs)):
+    for idx, job in enumerate(jobs):
+        ax = axs[np.unravel_index(idx, [nrows, ncols])]
+        ax.title.set_text(f'Job #{idx + 1}')
         job.plot(ax)
         if out_dir is not None:
             os.makedirs(out_dir, exist_ok=True)
