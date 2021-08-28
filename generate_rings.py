@@ -48,6 +48,24 @@ class LampParams:
         return self.bulb_length - self.bulb_diameter
 
 
+class Ring:
+    def __init__(
+            self,
+            diam_inner: float,
+            diam_outer: float,
+            has_socket: bool = False,
+            lamp_idx: int = None,
+            z: float = None,
+            z_idx: int = None
+    ):
+        self.diam_inner = diam_inner
+        self.diam_outer = diam_outer
+        self.has_socket = has_socket
+        self.lamp_idx = lamp_idx
+        self.z = z
+        self.z_idx = z_idx
+
+
 class CutArea:
     def __init__(self, tolerance: float = 0, padding: float = 0):
         self.tolerance = tolerance
@@ -112,16 +130,26 @@ class CutArea:
 
         self._draw(ax, x0)
 
-    def add_to_dxf(self, msp: Modelspace, x0=None, layer: str = 'background'):
-        self._draw(msp, x0)
+    def add_to_dxf(self, msp: Modelspace, x0=None, layer: str = 'background') -> List[Ring]:
+        return self._draw(msp, x0)
 
-    def _draw(self, obj, x0):
+    def _draw(self, obj, x0) -> List[Ring]:
         if x0 is None:
             x0 = np.zeros([2])
         center = np.asarray([self.diameter / 2] * 2) + x0
 
+        rings = []
+        d_o = None
+
         for diam in self.cut_diams:
             self._add_circle(obj, center, diam / 2)
+
+            d_i = d_o
+            d_o = diam
+            if d_i is not None and d_o is not None:
+                rings.append(Ring(d_i, d_o))
+
+        return rings
 
     @staticmethod
     def _add_circle(obj, center, radius):
@@ -179,15 +207,16 @@ class SocketCutarea(CutArea):
 
         self._draw(ax, x0)
 
-    def add_to_dxf(self, msp: Modelspace, x0=None, layer: str = 'background'):
-        self._draw(msp, x0)
+    def add_to_dxf(self, msp: Modelspace, x0=None, layer: str = 'background') -> List[Ring]:
+        return self._draw(msp, x0)
 
-    def _draw(self, obj, x0):
+    def _draw(self, obj, x0) -> List[Ring]:
         if x0 is None:
             x0 = np.zeros([2])
         center = np.asarray([self.diameter / 2] * 2) + x0
 
-        super()._draw(obj, x0)
+        rings = super()._draw(obj, x0)
+        rings = [Ring(diam_inner=self.rings[0][1], diam_outer=self.rings[0][2], has_socket=True)] + rings
 
         # plot inner socket ring
         self._add_circle(obj, center, self.socket_diam / 2)
@@ -236,6 +265,8 @@ class SocketCutarea(CutArea):
                     if x_sign * y_sign * theta_sign == -1:
                         theta1, theta2 = theta2, theta1
                     self._add_arc(obj, center + p_corner * v_sign, diam, theta1, theta2)
+
+        return rings
 
     def _get_points_inner(self):
         r_inner = self.socket_diam / 2 + self.socket_ring_width
@@ -327,13 +358,18 @@ def compute_rings(lamps: List[LampParams]) -> np.ndarray:
 
 
 def split_rings(rings: np.ndarray, lamps: List[LampParams]) -> Tuple[np.ndarray, np.ndarray]:
+    rings_old = rings
+    rings = np.zeros_like(rings_old, shape=[rings.shape[0], rings.shape[1] + 1])
+    rings[:, :5] = rings_old
+
     strut_rings = []
     new_rings = None
     for lamp_idx, lamp in enumerate(lamps):
         lamp_rings = rings[rings[:, 3] == lamp_idx]
-        lamp_rings = lamp_rings[lamp_rings[:, -1].argsort()]
+        lamp_rings = lamp_rings[lamp_rings[:, 4].argsort()]
         lamp_rings = np.flip(lamp_rings, axis=0)
         for idx in lamp.socket_layer_indices:
+            lamp_rings[idx, -1] = 1
             strut_rings.append(lamp_rings[idx])
         lamp_rings = np.delete(lamp_rings, lamp.socket_layer_indices, axis=0)
         if new_rings is None:
@@ -472,18 +508,19 @@ class Job:
         for cut_area, corner in zip(self._cut_areas, self._top_left_corners):
             cut_area.plot(ax=ax, x0=corner)
 
-    def save_dxf(self, filename: str):
+    def save_dxf(self, filename: str) -> List[Ring]:
         doc = ezdxf.new()
-        # Set centimeter as document/modelspace units
         doc.units = units.MM
-        # which is a shortcut (including validation) for
-        doc.header['$INSUNITS'] = units.MM
         msp = doc.modelspace()
 
+        rings = []
+
         for cut_area, corner in zip(self._cut_areas, self._top_left_corners):
-            cut_area.add_to_dxf(msp=msp, x0=corner)
+            rings += cut_area.add_to_dxf(msp=msp, x0=corner)
 
         doc.saveas(filename)
+
+        return rings
 
 
 def get_jobs(cut_areas: List[CutArea], work_area: Optional[np.ndarray] = None) -> List[Job]:
@@ -503,7 +540,7 @@ def get_jobs(cut_areas: List[CutArea], work_area: Optional[np.ndarray] = None) -
     return jobs
 
 
-def generate_drawing(jobs: List[Job], out_dir: str = None, plot_aspect_ratio: float = 16 / 9):
+def generate_drawing(jobs: List[Job], out_dir: str = None, plot_aspect_ratio: float = 16 / 9) -> List[Ring]:
     njobs = len(jobs)
     nrows = int(np.floor(np.sqrt(njobs / plot_aspect_ratio)))
     ncols = int(np.ceil(njobs / nrows))
@@ -515,13 +552,46 @@ def generate_drawing(jobs: List[Job], out_dir: str = None, plot_aspect_ratio: fl
     fig.suptitle("technical drawing")
     if not isinstance(axs, np.ndarray):
         axs = np.asarray([axs])
+
+    rings = []
+
     for idx, job in enumerate(jobs):
         ax = axs[np.unravel_index(idx, [nrows, ncols])]
         ax.title.set_text(f'Job #{idx + 1}')
         job.plot(ax)
         if out_dir is not None:
             os.makedirs(out_dir, exist_ok=True)
-            job.save_dxf(os.path.join(out_dir, f"job_{idx + 1}.dxf"))
+            rings += job.save_dxf(os.path.join(out_dir, f"job_{idx + 1}.dxf"))
+
+    return rings
+
+
+def assign_rings(rings: List[Ring], all_rings: np.ndarray) -> List[Ring]:
+    all_rings = all_rings.copy()
+
+    for ring in [ring for ring in rings if ring.has_socket]:
+        all_rings = assign_ring(ring, all_rings)
+
+    for ring in [ring for ring in rings if not ring.has_socket]:
+        all_rings = assign_ring(ring, all_rings)
+
+    rings = [ring for ring in rings if ring.lamp_idx is not None]
+
+    return rings
+
+
+def assign_ring(ring: Ring, rings: np.ndarray) -> np.ndarray:
+    candidates = rings.astype(float)
+    candidates[rings[:, 2] != ring.diam_outer, 1] = np.infty
+    candidates[rings[:, -1] != int(ring.has_socket), 1] = np.infty
+    deviations = np.abs(candidates[:, 1] - ring.diam_inner)
+    if min(deviations) >= np.infty:
+        return rings
+    idx = np.argmin(deviations)
+    ring.lamp_idx = rings[idx, 3]
+    ring.z = rings[idx, 0]
+    ring.z_idx = rings[idx, 4]
+    return np.delete(rings, idx, axis=0)
 
 
 def main(visualize=False):
@@ -611,10 +681,15 @@ def main(visualize=False):
     print(f"#jobs:              {len(jobs)}")
     print(f"total cut length:   {sum([cut_area.total_cut_length for cut_area in cut_areas]) * 1e-3:.02f}m")
 
+    timestr = time.strftime("%Y%m%d-%H%M%S")
+    rings = generate_drawing(jobs, out_dir=os.path.join("output", timestr))
+
+    rings = assign_rings(rings, all_rings)
+
     if visualize:
-        zmin = all_rings[:, 0].min() - 25
-        zmax = all_rings[:, 0].max() + 25
-        xmax = all_rings[:, 2].max() / 2 + 25
+        zmin = min([ring.z for ring in rings]) - 25
+        zmax = max([ring.z for ring in rings]) + 25
+        xmax = max([ring.diam_outer / 2 for ring in rings]) + 25
         xmin = -xmax
         fig, ax = plt.subplots(1, 3)
         plt.suptitle("cardboard lamps")
@@ -622,22 +697,23 @@ def main(visualize=False):
             ax[lamp_idx].set_aspect('equal', 'box')
             ax[lamp_idx].set_xlim(xmin, xmax)
             ax[lamp_idx].set_ylim(zmin, zmax)
-            arr = rings[rings[:, 3] == lamp_idx]
-            for z, d_i, d_o, *_ in arr:
-                for sign in {-1, 1}:
+            lamp_rings = [ring for ring in rings if ring.lamp_idx == lamp_idx]
+            for ring in lamp_rings:
+                if not ring.has_socket:
+                    for sign in {-1, 1}:
+                        ax[lamp_idx].plot(
+                            [sign * ring.diam_inner / 2, sign * ring.diam_outer / 2], [ring.z, ring.z],
+                            linewidth=lamp.layer_thickness,
+                            color='brown'
+                        )
+                else:
                     ax[lamp_idx].plot(
-                        [sign * d_i / 2, sign * d_o / 2], [z, z],
+                        [-ring.diam_outer / 2, ring.diam_outer / 2], [ring.z, ring.z],
                         linewidth=lamp.layer_thickness,
                         color='brown'
                     )
-            for z, _, d_o, *_ in strut_rings[strut_rings[:, 3] == lamp_idx]:
-                ax[lamp_idx].plot(
-                    [-d_o / 2, d_o / 2], [z, z],
-                    linewidth=lamp.layer_thickness,
-                    color='brown'
-                )
 
-            z_strut = min(strut_rings[strut_rings[:, 3] == lamp_idx][:, 0]) - lamp.layer_thickness / 2
+            z_strut = min([ring.z for ring in lamp_rings if ring.has_socket]) - lamp.layer_thickness / 2
             for sign in {-1, 1}:
                 ax[lamp_idx].plot(
                     [sign * 27 / 2, sign * 27 / 2], [z_strut, z_strut - lamp.socket_length],
@@ -647,9 +723,6 @@ def main(visualize=False):
             center = (0.0, z_strut - lamp.socket_length - lamp.bulb_diameter / 2)
             circle = plt.Circle(center, lamp.bulb_diameter / 2, color='yellow', fill=True)
             ax[lamp_idx].add_patch(circle)
-
-        timestr = time.strftime("%Y%m%d-%H%M%S")
-        generate_drawing(jobs, out_dir=os.path.join("output", timestr))
 
         plt.show()
 
