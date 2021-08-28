@@ -1,7 +1,9 @@
 import math
 import os
 import time
+from io import TextIOWrapper
 from typing import List, Optional, Tuple
+from zipfile import ZipFile
 
 import ezdxf
 from matplotlib.axes import Axes
@@ -508,7 +510,7 @@ class Job:
         for cut_area, corner in zip(self._cut_areas, self._top_left_corners):
             cut_area.plot(ax=ax, x0=corner)
 
-    def save_dxf(self, filename: str) -> List[Ring]:
+    def save_dxf(self, zf: Optional[ZipFile] = None, filename: Optional[str] = None) -> List[Ring]:
         doc = ezdxf.new()
         doc.units = units.MM
         msp = doc.modelspace()
@@ -518,7 +520,9 @@ class Job:
         for cut_area, corner in zip(self._cut_areas, self._top_left_corners):
             rings += cut_area.add_to_dxf(msp=msp, x0=corner)
 
-        doc.saveas(filename)
+        if zf is not None and filename is not None:
+            with zf.open(filename, 'w') as f:
+                doc.write(stream=TextIOWrapper(f), fmt='asc')
 
         return rings
 
@@ -540,7 +544,7 @@ def get_jobs(cut_areas: List[CutArea], work_area: Optional[np.ndarray] = None) -
     return jobs
 
 
-def generate_drawing(jobs: List[Job], out_dir: str = None, plot_aspect_ratio: float = 16 / 9) -> List[Ring]:
+def generate_drawing(jobs: List[Job], zip_path: str = None, plot_aspect_ratio: float = 16 / 9) -> List[Ring]:
     njobs = len(jobs)
     nrows = int(np.floor(np.sqrt(njobs / plot_aspect_ratio)))
     ncols = int(np.ceil(njobs / nrows))
@@ -555,13 +559,12 @@ def generate_drawing(jobs: List[Job], out_dir: str = None, plot_aspect_ratio: fl
 
     rings = []
 
+    zf = ZipFile(zip_path, 'w') if zip_path is not None else None
     for idx, job in enumerate(jobs):
         ax = axs[np.unravel_index(idx, [nrows, ncols])]
         ax.title.set_text(f'Job #{idx + 1}')
         job.plot(ax)
-        if out_dir is not None:
-            os.makedirs(out_dir, exist_ok=True)
-            rings += job.save_dxf(os.path.join(out_dir, f"job_{idx + 1}.dxf"))
+        rings += job.save_dxf(zf, f"job_{idx + 1}.dxf")
 
     return rings
 
@@ -688,7 +691,7 @@ def main(visualize=False):
     print(f"total cut length:   {sum([cut_area.total_cut_length for cut_area in cut_areas]) * 1e-3:.02f}m")
 
     timestr = time.strftime("%Y%m%d-%H%M%S")
-    rings = generate_drawing(jobs, out_dir=os.path.join("output", timestr))
+    rings = generate_drawing(jobs, zip_path=os.path.join("output", f"{timestr}_jobs.zip"))
     rings = assign_rings(rings, all_rings)
 
     if visualize:
