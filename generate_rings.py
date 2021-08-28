@@ -569,15 +569,21 @@ def generate_drawing(jobs: List[Job], out_dir: str = None, plot_aspect_ratio: fl
 def assign_rings(rings: List[Ring], all_rings: np.ndarray) -> List[Ring]:
     all_rings = all_rings.copy()
 
-    for ring in [ring for ring in rings if ring.has_socket]:
+    assigned_rings = []
+    while rings and all_rings.shape[0]:
+        ring = get_next_ring(rings, all_rings)
         all_rings = assign_ring(ring, all_rings)
+        if ring.lamp_idx is None:
+            break
+        rings.remove(ring)
+        assigned_rings.append(ring)
 
-    for ring in [ring for ring in rings if not ring.has_socket]:
-        all_rings = assign_ring(ring, all_rings)
+    return assigned_rings
 
-    rings = [ring for ring in rings if ring.lamp_idx is not None]
 
-    return rings
+def get_next_ring(rings: List[Ring], all_rings: np.ndarray) -> Ring:
+    rings = sorted(rings, key=lambda ring: (np.min(np.abs(ring.diam_outer - all_rings[:, 2])), np.min(np.abs(ring.diam_inner - all_rings[:, 1]))))
+    return rings[0]
 
 
 def assign_ring(ring: Ring, rings: np.ndarray) -> np.ndarray:
@@ -683,7 +689,6 @@ def main(visualize=False):
 
     timestr = time.strftime("%Y%m%d-%H%M%S")
     rings = generate_drawing(jobs, out_dir=os.path.join("output", timestr))
-
     rings = assign_rings(rings, all_rings)
 
     if visualize:
