@@ -456,7 +456,7 @@ class Job:
             return self.work_area
 
     def assign_cut_areas(self, cut_areas: List[CutArea]) -> List[CutArea]:
-        if max([cut_area.diameter for cut_area in cut_areas]) > self.work_area[:].min():
+        if max([ca.job_diameter for ca in cut_areas]) > self.work_area[:].min():
             raise ValueError("Work area is too small!")
 
         cas = cut_areas[:]
@@ -607,7 +607,7 @@ def main(visualize=False):
     lamps = [
         LampParams(
             sphere_diameter=270,
-            layer_thickness=6.7,
+            layer_thickness=6,
             ring_width=15,
             sphere_opening_top=95,
             sphere_opening_bottom=115,
@@ -616,13 +616,13 @@ def main(visualize=False):
             strut_width=40,
             outer_ring_corner_diam=25,
             socket_ring_corner_diam=10,
-            socket_layer_indices=[5, 6],
+            socket_layer_indices=[5, 6, 7],
             bulb_diameter=95,
             bulb_length=135
         ),
         LampParams(
             sphere_diameter=360,
-            layer_thickness=6.7,
+            layer_thickness=6,
             ring_width=16,
             sphere_opening_top=115,
             sphere_opening_bottom=170,
@@ -631,13 +631,13 @@ def main(visualize=False):
             strut_width=40,
             outer_ring_corner_diam=25,
             socket_ring_corner_diam=10,
-            socket_layer_indices=[10, 11],
+            socket_layer_indices=[10, 11, 12],
             bulb_diameter=95,
             bulb_length=135
         ),
         LampParams(
             sphere_diameter=450,
-            layer_thickness=6.7,
+            layer_thickness=6,
             ring_width=20,
             sphere_opening_top=150,
             sphere_opening_bottom=235,
@@ -646,14 +646,14 @@ def main(visualize=False):
             strut_width=40,
             outer_ring_corner_diam=25,
             socket_ring_corner_diam=10,
-            socket_layer_indices=[13, 14],
+            socket_layer_indices=[13, 14, 15],
             bulb_diameter=125,
             bulb_length=175
         )
     ]
     tolerance = 4
-    padding = 10
-    work_area = np.asarray([940, 565])
+    padding = 3
+    work_area = np.asarray([810, 460])
 
     rings = compute_rings(lamps)
 
