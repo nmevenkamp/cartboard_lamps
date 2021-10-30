@@ -6,11 +6,12 @@ from typing import List, Optional, Tuple
 from zipfile import ZipFile
 
 import ezdxf
+import ezdxf.document
+import ezdxf.units
 from matplotlib.axes import Axes
 import matplotlib.pyplot as plt
 import matplotlib.patches as patches
 import numpy as np
-from ezdxf import units
 from ezdxf.layouts import Modelspace
 
 
@@ -510,9 +511,13 @@ class Job:
         for cut_area, corner in zip(self._cut_areas, self._top_left_corners):
             cut_area.plot(ax=ax, x0=corner)
 
-    def save_dxf(self, zf: Optional[ZipFile] = None, filename: Optional[str] = None) -> List[Ring]:
+    def save_dxf(
+            self,
+            zf: Optional[ZipFile] = None,
+            filename: Optional[str] = None
+    ) -> Tuple[List[Ring], ezdxf.document.Drawing]:
         doc = ezdxf.new()
-        doc.units = units.MM
+        doc.units = ezdxf.units.MM
         msp = doc.modelspace()
 
         rings = []
@@ -524,7 +529,21 @@ class Job:
             with zf.open(filename, 'w') as f:
                 doc.write(stream=TextIOWrapper(f), fmt='asc')
 
-        return rings
+        return rings, doc
+
+    def save_pdf(self, path: str):
+        fig, ax = plt.subplots(1, 1)
+        self.plot(ax)
+        mm_to_inch = 1 / 25.4
+        xlim = ax.get_xlim()
+        w = xlim[1] - xlim[0]
+        ylim = ax.get_ylim()
+        h = ylim[1] - ylim[0]
+        fig.set_size_inches(w * mm_to_inch, h * mm_to_inch)
+        plt.axis('off')
+        plt.savefig(path, dpi=300)
+        plt.close(fig)
+
 
 
 def get_jobs(cut_areas: List[CutArea], work_area: Optional[np.ndarray] = None) -> List[Job]:
@@ -544,29 +563,38 @@ def get_jobs(cut_areas: List[CutArea], work_area: Optional[np.ndarray] = None) -
     return jobs
 
 
-def generate_drawing(jobs: List[Job], zip_path: str = None, plot_aspect_ratio: float = 16 / 9) -> List[Ring]:
+def generate_drawing(
+        jobs: List[Job],
+        output_basename: str = None,
+        plot_aspect_ratio: float = 16 / 9,
+        save_print_templates: bool = True
+) -> List[Ring]:
     njobs = len(jobs)
     nrows = int(np.floor(np.sqrt(njobs / plot_aspect_ratio)))
     ncols = int(np.ceil(njobs / nrows))
 
-    fig, axs = plt.subplots(nrows=nrows, ncols=ncols)
+    fig, axs = plt.subplots(nrows=nrows, ncols=ncols, squeeze=False)
     for idx in range(njobs, nrows * ncols):
         fig.delaxes(axs[np.unravel_index(idx, [nrows, ncols])])
 
     fig.suptitle("technical drawing")
-    if not isinstance(axs, np.ndarray):
-        axs = np.asarray([axs])
 
-    rings = []
+    all_rings = []
 
-    zf = ZipFile(zip_path, 'w') if zip_path is not None else None
+    zf = ZipFile(f"{output_basename}_jobs.zip", 'w') if output_basename is not None else None
     for idx, job in enumerate(jobs):
         ax = axs[np.unravel_index(idx, [nrows, ncols])]
         ax.title.set_text(f'Job #{idx + 1}')
         job.plot(ax)
-        rings += job.save_dxf(zf, f"job_{idx + 1}.dxf")
+        rings, doc = job.save_dxf(zf, f"job_{idx + 1:02d}.dxf")
+        all_rings += rings
 
-    return rings
+        if save_print_templates and output_basename is not None:
+            pdf_path = os.path.join(output_basename, f"job_{idx + 1:02d}.pdf")
+            os.makedirs(os.path.dirname(pdf_path), exist_ok=True)
+            job.save_pdf(pdf_path)
+
+    return all_rings
 
 
 def assign_rings(rings: List[Ring], all_rings: np.ndarray) -> List[Ring]:
@@ -585,7 +613,8 @@ def assign_rings(rings: List[Ring], all_rings: np.ndarray) -> List[Ring]:
 
 
 def get_next_ring(rings: List[Ring], all_rings: np.ndarray) -> Ring:
-    rings = sorted(rings, key=lambda ring: (np.min(np.abs(ring.diam_outer - all_rings[:, 2])), np.min(np.abs(ring.diam_inner - all_rings[:, 1]))))
+    rings = sorted(rings, key=lambda ring: (
+    np.min(np.abs(ring.diam_outer - all_rings[:, 2])), np.min(np.abs(ring.diam_inner - all_rings[:, 1]))))
     return rings[0]
 
 
@@ -653,7 +682,7 @@ def main(visualize=False):
     ]
     tolerance = 4
     padding = 3
-    work_area = np.asarray([810, 460])
+    work_area = np.asarray([460, 460])
 
     rings = compute_rings(lamps)
 
@@ -691,7 +720,7 @@ def main(visualize=False):
     print(f"total cut length:   {sum([cut_area.total_cut_length for cut_area in cut_areas]) * 1e-3:.02f}m")
 
     timestr = time.strftime("%Y%m%d-%H%M%S")
-    rings = generate_drawing(jobs, zip_path=os.path.join("output", f"{timestr}_jobs.zip"))
+    rings = generate_drawing(jobs, output_basename=os.path.join("output", f"{timestr}"))
     rings = assign_rings(rings, all_rings)
 
     if visualize:
